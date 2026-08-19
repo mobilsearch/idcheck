@@ -25,7 +25,7 @@ button{width:100%;min-height:46px;border:0;border-radius:9px;font-size:16px;font
 .status{font-weight:800;text-align:center;padding:8px;border-radius:8px;background:#f1f5f8;margin:8px 0;font-size:13px}
 .scanBox{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4}
 video{width:100%;height:100%;object-fit:cover}
-.frame{position:absolute;left:5%;right:5%;top:30%;aspect-ratio:1.586/1;border:3px solid rgba(255,255,255,.92);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.15)}
+.frame{position:absolute;left:4%;right:4%;top:31%;height:38%;border:3px solid rgba(255,255,255,.95);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.14)}
 .scanHelp{position:absolute;left:7%;right:7%;bottom:7%;background:rgba(0,0,0,.62);color:#fff;padding:8px;border-radius:8px;text-align:center;font-weight:800;font-size:13px}
 .person{border:2px solid #1e5f93;border-radius:12px;padding:12px;margin-top:10px;background:#f7fbff}
 .personName{font-size:25px;font-weight:950;margin-bottom:8px}
@@ -62,7 +62,7 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 <div class="scanBox">
 <video id="video" autoplay playsinline muted></video>
 <div class="frame"></div>
-<div class="scanHelp">신분증은 가로로 흰색 틀 안에 맞춰주세요<br>개인 바코드는 화면 안에 보여주세요</div>
+<div class="scanHelp"><b>개인 바코드는 화면에 보이면 즉시 스캔</b><br>신분증은 이름 + 주민번호 앞 6자리 글자만 흰색 틀 안에 크게 보여주세요.</div>
 </div>
 <button class="gray" id="nameSearchBtn">인식이 안 되면 성명 검색</button>
 <div class="note">신분증 사진은 저장하지 않습니다. OCR용 순간 화면만 브라우저 메모리에서 사용합니다.</div>
@@ -125,7 +125,7 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 const API = "https://script.google.com/macros/s/AKfycbzXm3I6ZbSifB7H9U9krGplLTsChmepjgZ-wAY7L1qI02TjnwS1viMjsARtWtNamd_8TQ/exec";
 let token='', rosterNames=[], stream=null, detector=null, ocrWorker=null;
 let ocrReady=false, ocrBusy=false, scanBusy=false, currentPerson=null, currentMethod='';
-let pendingDetectedType='', lastDetectAt=0, ocrTimer=null, scanActive=false;
+let pendingDetectedType='', lastDetectAt=0, lastBarcodeAttemptAt=0, ocrTimer=null, scanActive=false;
 
 const $=id=>document.getElementById(id);
 function show(id){ ['login','scan','search','result'].forEach(x=>$(x).classList.toggle('hidden',x!==id)); }
@@ -211,14 +211,14 @@ async function startCamera(){
     }
 
     scanActive=true;
-    msg($('scanStatus'),'신분증은 가로로 흰색 틀 안에 맞춰주세요.');
+    msg($('scanStatus'),'개인 바코드 또는 이름·주민번호 앞 6자리를 보여주세요.');
 
     if('BarcodeDetector' in window){
       try{ detector=new BarcodeDetector({formats:['code_128','qr_code','data_matrix','ean_13','ean_8']}); }
       catch(_){ detector=new BarcodeDetector(); }
       requestAnimationFrame(scanBarcodeLoop);
     } else {
-      msg($('scanStatus'),'신분증 자동인식 중입니다. 바코드가 안 되면 성명검색을 이용하세요.');
+      msg($('scanStatus'),'이름·생년월일 문자 자동인식 중입니다. 안 되면 성명검색을 이용하세요.');
     }
     scheduleOcr();
   }catch(e){
@@ -243,47 +243,67 @@ function stopCamera(){
 
 async function scanBarcodeLoop(){
   if(!stream||!detector||!scanActive) return;
-  if(!scanBusy && Date.now()-lastDetectAt>1400){
+
+  // 개인 바코드는 OCR보다 우선한다.
+  // 카메라 전체 화면에서 약 0.25초 간격으로 빠르게 확인한다.
+  const now=Date.now();
+  if(!scanBusy && now-lastBarcodeAttemptAt>=250){
+    lastBarcodeAttemptAt=now;
     try{
       const codes=await detector.detect($('video'));
       if(codes && codes.length){
-        const raw=(codes[0].rawValue||'').trim();
-        if(raw){
+        // 우리가 발급한 12자리 개인바코드를 최우선으로 찾는다.
+        const issued=codes.find(c=>{
+          const raw=String(c.rawValue||'').trim();
+          return /^\d{12}$/.test(raw);
+        });
+
+        if(issued){
+          const raw=String(issued.rawValue||'').trim();
           lastDetectAt=Date.now();
-          if(/^\d{12}$/.test(raw)){
-            scanBusy=true;
-            await lookupBarcode(raw);
-            scanBusy=false;
-            return;
-          } else {
-            pendingDetectedType='PASS 모바일신분증';
-            msg($('scanStatus'),'모바일 신분증 QR/바코드를 감지했습니다. 성명으로 대상자를 선택해 주세요.');
-            setTimeout(()=>openNameSearch(true),650);
-            return;
-          }
+          scanBusy=true;
+          msg($('scanStatus'),'개인 바코드 인식 · 명부 확인 중...');
+          await lookupBarcode(raw);
+          scanBusy=false;
+          return;
+        }
+
+        // PASS 등 모바일 QR/바코드는 개인바코드가 없을 때만 처리한다.
+        const mobile=codes.find(c=>{
+          const fmt=String(c.format||'').toLowerCase();
+          return fmt==='qr_code' || fmt==='data_matrix';
+        });
+
+        if(mobile && Date.now()-lastDetectAt>1200){
+          lastDetectAt=Date.now();
+          pendingDetectedType='PASS 모바일신분증';
+          msg($('scanStatus'),'모바일 신분증 QR/바코드를 감지했습니다. 성명으로 대상자를 선택해 주세요.');
+          setTimeout(()=>openNameSearch(true),500);
+          return;
         }
       }
-    }catch(_ ){}
+    }catch(_){}
   }
+
   requestAnimationFrame(scanBarcodeLoop);
 }
 
 async function initOcr(){
   if(ocrWorker||!window.Tesseract) return;
   try{
-    msg($('scanStatus'),'카메라 준비 완료 · 신분증 OCR 초기화 중...');
+    msg($('scanStatus'),'카메라 준비 완료 · 문자 인식 준비 중...');
     ocrWorker=await Tesseract.createWorker('kor+eng',1,{logger:m=>{ if(m.status==='recognizing text') $('scanStatus').textContent='신분증 인식 중... '+Math.round((m.progress||0)*100)+'%'; }});
     ocrReady=true;
-    msg($('scanStatus'),'신분증 또는 바코드를 비춰주세요.');
+    msg($('scanStatus'),'이름과 주민번호 앞 6자리만 보여주세요.');
   }catch(e){
     ocrReady=false;
-    msg($('scanStatus'),'바코드는 자동인식됩니다. 신분증 인식이 어려우면 성명검색을 사용하세요.');
+    msg($('scanStatus'),'바코드는 자동인식됩니다. 문자 인식이 어려우면 성명검색을 사용하세요.');
   }
 }
 
 function scheduleOcr(){
   if(ocrTimer)clearTimeout(ocrTimer);
-  ocrTimer=setTimeout(runOcr,2200);
+  ocrTimer=setTimeout(runOcr,1400);
 }
 
 function lev(a,b){
@@ -293,6 +313,25 @@ function lev(a,b){
   for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)
     dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
   return dp[m][n];
+}
+
+
+function findBirth6FromOcr(raw){
+  const s=String(raw||'')
+    .replace(/[Oo]/g,'0')
+    .replace(/[Il|]/g,'1')
+    .replace(/[^\d-]/g,' ');
+  const candidates=[];
+
+  // 000000-... 또는 000000 형태
+  const rx=/(\d{6})(?:\s*-\s*\d{0,7})?/g;
+  let m;
+  while((m=rx.exec(s))!==null){
+    const six=m[1];
+    const mm=Number(six.slice(2,4)), dd=Number(six.slice(4,6));
+    if(mm>=1&&mm<=12&&dd>=1&&dd<=31) candidates.push(six);
+  }
+  return candidates[0]||'';
 }
 
 function findNameFromOcr(raw){
@@ -325,14 +364,18 @@ async function runOcr(){
   ocrBusy=true;
   try{
     const c=$('ocrCanvas'), ctx=c.getContext('2d',{willReadFrequently:true});
-
-    // 화면 중앙의 신분증 가로 영역만 사용
     const vw=v.videoWidth, vh=v.videoHeight;
-    let sw=vw*0.92, sh=sw/1.586;
-    if(sh>vh*0.62){ sh=vh*0.62; sw=sh*1.586; }
-    const sx=(vw-sw)/2, sy=(vh-sh)/2;
 
-    const outW=1400, outH=Math.round(outW/1.586);
+    // 신분증 전체가 아니라 화면 중앙의 "글자 영역"만 읽는다.
+    // 현장에서는 이름 + 주민번호 앞 6자리만 크게 보이면 된다.
+    const sw=vw*0.92;
+    const sh=vh*0.42;
+    const sx=(vw-sw)/2;
+    const sy=(vh-sh)/2;
+
+    // 속도 우선: 너무 큰 이미지는 만들지 않는다.
+    const outW=1000;
+    const outH=Math.max(360,Math.round(outW*(sh/sw)));
     c.width=outW; c.height=outH;
     ctx.drawImage(v,sx,sy,sw,sh,0,0,outW,outH);
 
@@ -341,7 +384,7 @@ async function runOcr(){
     const d=img.data;
     for(let i=0;i<d.length;i+=4){
       let y=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-      y=(y-128)*1.55+128;
+      y=(y-128)*1.7+128;
       y=Math.max(0,Math.min(255,y));
       d[i]=d[i+1]=d[i+2]=y;
     }
@@ -349,22 +392,25 @@ async function runOcr(){
 
     const ret=await ocrWorker.recognize(c);
     const raw=((ret&&ret.data&&ret.data.text)||'');
-    const compact=raw.replace(/\s+/g,'');
     const found=findNameFromOcr(raw);
+    const birth6=findBirth6FromOcr(raw);
 
     if(found){
-      let inferred='';
-      if(compact.includes('주민등록증')) inferred='주민등록증';
-      else if(compact.includes('운전면허')||compact.includes('면허증')) inferred='운전면허증';
-      pendingDetectedType=inferred;
-      msg($('scanStatus'),'성명 인식: '+found+' · 명부 확인 중...');
-      await lookupNameAuto(found);
+      msg(
+        $('scanStatus'),
+        '성명 인식: '+found+(birth6?' · 생년월일 '+birth6:'')+' · 명부 확인 중...'
+      );
+      await lookupNameAuto(found,birth6);
       return;
     }
 
-    msg($('scanStatus'),'신분증을 가로로 더 가까이 맞춰주세요.');
+    if(birth6){
+      msg($('scanStatus'),'생년월일 '+birth6+' 인식 · 이름 글자를 조금 더 크게 보여주세요.');
+    }else{
+      msg($('scanStatus'),'이름과 주민번호 앞 6자리를 틀 안에 더 크게 보여주세요.');
+    }
   }catch(_){
-    msg($('scanStatus'),'신분증 인식이 어려우면 아래 성명검색을 사용하세요.');
+    msg($('scanStatus'),'문자 인식이 어려우면 아래 성명검색을 사용하세요.');
   }finally{
     ocrBusy=false;
     if(stream&&scanActive)scheduleOcr();
@@ -381,22 +427,42 @@ async function lookupBarcode(code){
   }catch(e){msg($('scanStatus'),e.message,true);}
 }
 
-async function lookupNameAuto(name){
+async function lookupNameAuto(name,birth6=''){
   try{
     const r=await jsonp('lookupName',{token,name});
     if(!r.ok||!r.people||!r.people.length) return;
+
     if(r.people.length===1){
-      currentMethod='신분증OCR';
+      currentMethod=birth6?'성명+생년월일OCR':'성명OCR';
       openResult(r.people[0]);
-    } else {
-      pauseCamera();
-      show('search');
-      $('searchName').value=name;
-      if(pendingDetectedType) $('searchIdType').value=pendingDetectedType;
-      renderCandidates(r.people,'신분증OCR');
-      msg($('searchMsg'),'동명이인입니다. 신분증의 생년월일을 보고 대상자를 선택하세요.');
+      return;
     }
-  }catch(_ ){}
+
+    // 동명이인은 OCR로 읽은 주민번호 앞 6자리(YYMMDD)로 자동 구분
+    if(birth6){
+      const matched=r.people.filter(p=>{
+        const dob=String(p.dob||'').replace(/\D/g,'');
+        return dob.length>=8 && dob.slice(-6)===birth6;
+      });
+      if(matched.length===1){
+        currentMethod='성명+생년월일OCR';
+        openResult(matched[0]);
+        return;
+      }
+    }
+
+    pauseCamera();
+    show('search');
+    $('searchName').value=name;
+    if(pendingDetectedType) $('searchIdType').value=pendingDetectedType;
+    renderCandidates(r.people,'성명OCR');
+    msg(
+      $('searchMsg'),
+      birth6
+        ? '동명이인입니다. 생년월일이 자동 구분되지 않아 대상자를 선택해 주세요.'
+        : '동명이인입니다. 신분증의 생년월일을 보고 대상자를 선택하세요.'
+    );
+  }catch(_){}
 }
 
 function openNameSearch(fromMobile=false){
