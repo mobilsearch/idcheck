@@ -25,7 +25,7 @@ button{width:100%;min-height:46px;border:0;border-radius:9px;font-size:16px;font
 .status{font-weight:800;text-align:center;padding:8px;border-radius:8px;background:#f1f5f8;margin:8px 0;font-size:13px}
 .scanBox{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4}
 video{width:100%;height:100%;object-fit:cover}
-.frame{position:absolute;left:8%;right:8%;top:20%;bottom:20%;border:3px solid rgba(255,255,255,.85);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.12)}
+.frame{position:absolute;left:5%;right:5%;top:30%;aspect-ratio:1.586/1;border:3px solid rgba(255,255,255,.92);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.15)}
 .scanHelp{position:absolute;left:7%;right:7%;bottom:7%;background:rgba(0,0,0,.62);color:#fff;padding:8px;border-radius:8px;text-align:center;font-weight:800;font-size:13px}
 .person{border:2px solid #1e5f93;border-radius:12px;padding:12px;margin-top:10px;background:#f7fbff}
 .personName{font-size:25px;font-weight:950;margin-bottom:8px}
@@ -62,7 +62,7 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 <div class="scanBox">
 <video id="video" autoplay playsinline muted></video>
 <div class="frame"></div>
-<div class="scanHelp">신분증 또는 개인 바코드를 화면 안에 맞춰주세요</div>
+<div class="scanHelp">신분증은 가로로 흰색 틀 안에 맞춰주세요<br>개인 바코드는 화면 안에 보여주세요</div>
 </div>
 <button class="gray" id="nameSearchBtn">인식이 안 되면 성명 검색</button>
 <div class="note">신분증 사진은 저장하지 않습니다. OCR용 순간 화면만 브라우저 메모리에서 사용합니다.</div>
@@ -125,7 +125,7 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 const API = "https://script.google.com/macros/s/AKfycbzXm3I6ZbSifB7H9U9krGplLTsChmepjgZ-wAY7L1qI02TjnwS1viMjsARtWtNamd_8TQ/exec";
 let token='', rosterNames=[], stream=null, detector=null, ocrWorker=null;
 let ocrReady=false, ocrBusy=false, scanBusy=false, currentPerson=null, currentMethod='';
-let pendingDetectedType='', lastDetectAt=0, ocrTimer=null;
+let pendingDetectedType='', lastDetectAt=0, ocrTimer=null, scanActive=false;
 
 const $=id=>document.getElementById(id);
 function show(id){ ['login','scan','search','result'].forEach(x=>$(x).classList.toggle('hidden',x!==id)); }
@@ -191,16 +191,34 @@ async function login(){
 }
 
 async function startCamera(){
-  stopCamera();
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:1920}},audio:false});
-    $('video').srcObject=stream;
-    msg($('scanStatus'),'바코드 또는 신분증을 비춰주세요.');
+    // 이미 권한을 받은 카메라 스트림이 살아 있으면 재사용한다.
+    // 성명검색/결과화면을 다녀와도 getUserMedia를 다시 호출하지 않으므로
+    // 같은 브라우저 세션에서는 카메라 권한을 다시 묻지 않는다.
+    if(stream && stream.getVideoTracks().some(t=>t.readyState==='live')){
+      stream.getVideoTracks().forEach(t=>t.enabled=true);
+      $('video').srcObject=stream;
+    }else{
+      stream=await navigator.mediaDevices.getUserMedia({
+        video:{
+          facingMode:{ideal:'environment'},
+          width:{ideal:1920},
+          height:{ideal:1080}
+        },
+        audio:false
+      });
+      $('video').srcObject=stream;
+    }
+
+    scanActive=true;
+    msg($('scanStatus'),'신분증은 가로로 흰색 틀 안에 맞춰주세요.');
+
     if('BarcodeDetector' in window){
-      try{ detector=new BarcodeDetector({formats:['code_128','qr_code','data_matrix','ean_13','ean_8']}); }catch(_){ detector=new BarcodeDetector(); }
+      try{ detector=new BarcodeDetector({formats:['code_128','qr_code','data_matrix','ean_13','ean_8']}); }
+      catch(_){ detector=new BarcodeDetector(); }
       requestAnimationFrame(scanBarcodeLoop);
     } else {
-      msg($('scanStatus'),'바코드는 성명검색으로 대체 가능합니다. 신분증 OCR 준비 중...');
+      msg($('scanStatus'),'신분증 자동인식 중입니다. 바코드가 안 되면 성명검색을 이용하세요.');
     }
     scheduleOcr();
   }catch(e){
@@ -208,13 +226,23 @@ async function startCamera(){
   }
 }
 
-function stopCamera(){
+function pauseCamera(){
+  scanActive=false;
   if(ocrTimer){clearTimeout(ocrTimer);ocrTimer=null;}
-  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  if(stream) stream.getVideoTracks().forEach(t=>t.enabled=false);
+}
+
+function stopCamera(){
+  scanActive=false;
+  if(ocrTimer){clearTimeout(ocrTimer);ocrTimer=null;}
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+    stream=null;
+  }
 }
 
 async function scanBarcodeLoop(){
-  if(!stream||!detector) return;
+  if(!stream||!detector||!scanActive) return;
   if(!scanBusy && Date.now()-lastDetectAt>1400){
     try{
       const codes=await detector.detect($('video'));
@@ -255,34 +283,92 @@ async function initOcr(){
 
 function scheduleOcr(){
   if(ocrTimer)clearTimeout(ocrTimer);
-  ocrTimer=setTimeout(runOcr,3600);
+  ocrTimer=setTimeout(runOcr,2200);
+}
+
+function lev(a,b){
+  const m=a.length,n=b.length,dp=Array.from({length:m+1},()=>Array(n+1).fill(0));
+  for(let i=0;i<=m;i++)dp[i][0]=i;
+  for(let j=0;j<=n;j++)dp[0][j]=j;
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)
+    dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
+  return dp[m][n];
+}
+
+function findNameFromOcr(raw){
+  const compact=String(raw||'').replace(/\s+/g,'');
+  const exact=[...new Set(rosterNames.filter(n=>compact.includes(String(n).replace(/\s+/g,''))))];
+  if(exact.length===1) return exact[0];
+  if(exact.length>1) return '';
+
+  // OCR이 한 글자를 틀린 경우를 보완하되, 한 명만 유일하게 맞을 때만 채택
+  const tokens=(String(raw||'').match(/[가-힣]{2,5}/g)||[]);
+  let best=[],bestDist=99;
+  rosterNames.forEach(name=>{
+    const nm=String(name).replace(/\s+/g,'');
+    tokens.forEach(t=>{
+      if(Math.abs(t.length-nm.length)>1) return;
+      const d=lev(t,nm);
+      if(d<bestDist){bestDist=d;best=[name];}
+      else if(d===bestDist&&!best.includes(name)) best.push(name);
+    });
+  });
+  return bestDist<=1 && best.length===1 ? best[0] : '';
 }
 
 async function runOcr(){
-  if(!stream) return;
+  if(!stream||!scanActive) return;
   if(!ocrReady||ocrBusy||scanBusy){scheduleOcr();return;}
+  const v=$('video');
+  if(!v.videoWidth||!v.videoHeight){scheduleOcr();return;}
+
   ocrBusy=true;
   try{
-    const v=$('video'), c=$('ocrCanvas');
-    const maxW=1100, ratio=Math.min(1,maxW/(v.videoWidth||maxW));
-    c.width=Math.max(320,Math.round((v.videoWidth||720)*ratio));
-    c.height=Math.max(480,Math.round((v.videoHeight||1280)*ratio));
-    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+    const c=$('ocrCanvas'), ctx=c.getContext('2d',{willReadFrequently:true});
+
+    // 화면 중앙의 신분증 가로 영역만 사용
+    const vw=v.videoWidth, vh=v.videoHeight;
+    let sw=vw*0.92, sh=sw/1.586;
+    if(sh>vh*0.62){ sh=vh*0.62; sw=sh*1.586; }
+    const sx=(vw-sw)/2, sy=(vh-sh)/2;
+
+    const outW=1400, outH=Math.round(outW/1.586);
+    c.width=outW; c.height=outH;
+    ctx.drawImage(v,sx,sy,sw,sh,0,0,outW,outH);
+
+    // 회색조 + 대비 강화
+    const img=ctx.getImageData(0,0,c.width,c.height);
+    const d=img.data;
+    for(let i=0;i<d.length;i+=4){
+      let y=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+      y=(y-128)*1.55+128;
+      y=Math.max(0,Math.min(255,y));
+      d[i]=d[i+1]=d[i+2]=y;
+    }
+    ctx.putImageData(img,0,0);
+
     const ret=await ocrWorker.recognize(c);
-    const tx=((ret&&ret.data&&ret.data.text)||'').replace(/\s+/g,'');
-    const hits=rosterNames.filter(n=>tx.includes(String(n).replace(/\s+/g,'')));
-    const uniq=[...new Set(hits)];
-    if(uniq.length===1){
+    const raw=((ret&&ret.data&&ret.data.text)||'');
+    const compact=raw.replace(/\s+/g,'');
+    const found=findNameFromOcr(raw);
+
+    if(found){
       let inferred='';
-      if(tx.includes('주민등록증')) inferred='주민등록증';
-      else if(tx.includes('운전면허')||tx.includes('면허증')) inferred='운전면허증';
+      if(compact.includes('주민등록증')) inferred='주민등록증';
+      else if(compact.includes('운전면허')||compact.includes('면허증')) inferred='운전면허증';
       pendingDetectedType=inferred;
-      await lookupNameAuto(uniq[0]);
+      msg($('scanStatus'),'성명 인식: '+found+' · 명부 확인 중...');
+      await lookupNameAuto(found);
       return;
     }
-    msg($('scanStatus'),'신분증 또는 바코드를 비춰주세요.');
-  }catch(_ ){ msg($('scanStatus'),'신분증 인식이 어려우면 아래 성명검색을 사용하세요.'); }
-  finally{ ocrBusy=false; if(stream)scheduleOcr(); }
+
+    msg($('scanStatus'),'신분증을 가로로 더 가까이 맞춰주세요.');
+  }catch(_){
+    msg($('scanStatus'),'신분증 인식이 어려우면 아래 성명검색을 사용하세요.');
+  }finally{
+    ocrBusy=false;
+    if(stream&&scanActive)scheduleOcr();
+  }
 }
 
 async function lookupBarcode(code){
@@ -303,7 +389,7 @@ async function lookupNameAuto(name){
       currentMethod='신분증OCR';
       openResult(r.people[0]);
     } else {
-      stopCamera();
+      pauseCamera();
       show('search');
       $('searchName').value=name;
       if(pendingDetectedType) $('searchIdType').value=pendingDetectedType;
@@ -314,7 +400,7 @@ async function lookupNameAuto(name){
 }
 
 function openNameSearch(fromMobile=false){
-  stopCamera(); show('search'); clearMsg($('searchMsg')); $('candidates').innerHTML='';
+  pauseCamera(); show('search'); clearMsg($('searchMsg')); $('candidates').innerHTML='';
   $('searchName').value='';
   $('searchIdType').value=fromMobile?'PASS 모바일신분증':'';
   $('searchOtherBox').classList.add('hidden'); $('searchOther').value='';
@@ -350,7 +436,7 @@ function renderCandidates(people,method){
 }
 
 function openResult(p){
-  stopCamera(); currentPerson=p; show('result');
+  pauseCamera(); currentPerson=p; show('result');
   $('rName').textContent=p.name||''; $('rMilitary').textContent=p.military||'';
   $('rCompany').textContent=p.company||''; $('rPlatoon').textContent=p.platoon||'';
   $('rRole').textContent=p.role||''; $('rGun').textContent=p.gun||''; $('rRoom').textContent=p.room||'';
