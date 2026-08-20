@@ -668,13 +668,13 @@ function receiptDateTime(d){
 // BIXOLON Android Web Print SDK(mPrintServer) direct POS bridge.
 // Field-confirmed 2026-08-20: Web Server port 18080, printer alias 350,
 // SRP-350III over USB (/dev/bus/usb/002/002). The browser talks only to
-// the phone-local mPrintServer via localhost; USB device selection remains managed by WebPrintSDK.
+// the phone-local WebPrintSDK service via the documented 127.0.0.1 endpoint; USB selection remains managed by the app.
 const BIXOLON_POS_CONFIG={
   // Android Chrome 94+ requires HTTPS for BIXOLON Web Print SDK.
   // Official Web Print SDK base path is case-sensitive and includes /WebPrintSDK/.
-  serverURL:'https://127.0.0.1:18080/WebPrintSDK',
+  serverURL:'https://127.0.0.1:18080/WebPrintSDK/',
   printerName:'350',
-  timeoutMs:7000
+  timeoutMs:10000
 };
 let bixolonIssueId=1;
 let posPrintBusy=false;
@@ -736,25 +736,31 @@ function buildBixolonReceiptPayload(p){
   return {id:bixolonIssueId++,functions};
 }
 
-function sendBixolonPrint(printerName,payload,serverURL,timeoutMs){
-  // Follow BIXOLON Web Print SDK's XMLHttpRequest transport pattern.
-  // Do not force application/json: that can trigger a CORS preflight (OPTIONS)
-  // before the print POST reaches the phone-local WebPrintSDK service.
+function bixolonXhrPost(url,body,timeoutMs){
   return new Promise((resolve,reject)=>{
-    const url=serverURL+'/'+encodeURIComponent(printerName);
     const xhr=new XMLHttpRequest();
     xhr.open('POST',url,true);
     xhr.timeout=timeoutMs;
+    // BIXOLON official Web Print SDK requestPrint sample uses this header
+    // while sending the generated JSON string as the POST body.
+    xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
 
-    xhr.onload=()=>{
-      const body=typeof xhr.responseText==='string'?xhr.responseText:'';
-      if(xhr.status>=200&&xhr.status<300){
-        resolve(body);
+    xhr.onreadystatechange=()=>{
+      if(xhr.readyState!==4) return;
+      const text=typeof xhr.responseText==='string'?xhr.responseText:'';
+      if(xhr.status===200){
+        resolve(text);
+      }else if(xhr.status===404){
+        reject(new Error('프린터 이름을 찾을 수 없습니다 (HTTP 404)'));
       }else{
-        reject(new Error('HTTP '+xhr.status+(body?(' · '+body.slice(0,120)):'')));
+        reject(new Error('WebPrintSDK HTTP '+xhr.status+(text?(' · '+text.slice(0,160)):'')));
       }
     };
-    xhr.onerror=()=>reject(new Error('WebPrintSDK 통신 실패'));
+    xhr.onerror=()=>{
+      const e=new Error('WebPrintSDK 네트워크/인증서 연결 실패 (status 0)');
+      e.name='NetworkError';
+      reject(e);
+    };
     xhr.ontimeout=()=>{
       const e=new Error('WebPrintSDK 연결시간 초과');
       e.name='TimeoutError';
@@ -765,11 +771,43 @@ function sendBixolonPrint(printerName,payload,serverURL,timeoutMs){
       e.name='AbortError';
       reject(e);
     };
-
-    // Sending a string without a custom Content-Type follows the vendor's
-    // simple XHR request style and avoids an unnecessary preflight request.
-    xhr.send(JSON.stringify(payload));
+    xhr.send(body);
   });
+}
+
+function parseBixolonJson(text){
+  try{return JSON.parse(text||'{}');}catch(_){return {};}
+}
+
+async function sendBixolonPrint(printerName,payload,serverURL,timeoutMs){
+  // Vendor flow: POST /<PrinterName> -> if ready/progress, POST /checkStatus.
+  const base=String(serverURL||'').replace(/\/+$/,'')+'/';
+  const printer=String(printerName||'').trim();
+  const requestURL=base+printer;
+  const firstText=await bixolonXhrPost(requestURL,JSON.stringify(payload),timeoutMs);
+  const first=parseBixolonJson(firstText);
+  const result=String(first.Result||first.result||'').toLowerCase();
+
+  if(result.includes('duplicated')) return firstText;
+
+  if(result.includes('ready')||result.includes('progress')){
+    const reqId=first.RequestID ?? first.requestID ?? first.requestId ?? payload.id;
+    const respId=first.ResponseID ?? first.responseID ?? first.responseId ?? '';
+    const inquiry=JSON.stringify({RequestID:reqId,ResponseID:String(respId),Timeout:10});
+    const statusText=await bixolonXhrPost(requestURL+'/checkStatus',inquiry,15000);
+    const statusObj=parseBixolonJson(statusText);
+    const finalResult=String(statusObj.Result||statusObj.result||statusText||'').trim();
+    if(/error|fail|offline|cover|paper|not ready/i.test(finalResult)){
+      throw new Error('프린터 처리 실패: '+finalResult.slice(0,160));
+    }
+    return statusText;
+  }
+
+  // Some versions return the final print result in the first 200 response.
+  if(result && /error|fail|offline|not ready/i.test(result)){
+    throw new Error('프린터 처리 실패: '+String(first.Result||first.result).slice(0,160));
+  }
+  return firstText;
 }
 
 async function printReceipt(){
@@ -795,9 +833,12 @@ async function printReceipt(){
     msg($('doneMsg'),'POS 출력 요청을 완료했습니다.');
   }catch(e){
     const timedOut=e&&(e.name==='TimeoutError'||e.name==='AbortError');
+    const networkErr=e&&e.name==='NetworkError';
     const text=timedOut
       ?'POS 출력 연결시간이 초과되었습니다. WebPrintSDK 인증서·백그라운드 서비스·포트 18080을 확인해 주세요.'
-      :'POS 출력 실패: '+(e&&e.message?e.message:'WebPrintSDK 연결을 확인해 주세요.');
+      :networkErr
+        ?'POS 출력 실패: 로컬 WebPrintSDK HTTPS 연결/인증서를 확인해 주세요.'
+        :'POS 출력 실패: '+(e&&e.message?e.message:'WebPrintSDK 연결을 확인해 주세요.');
     msg($('doneMsg'),text,true);
   }finally{
     posPrintBusy=false;
