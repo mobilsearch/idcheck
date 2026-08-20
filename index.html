@@ -137,7 +137,7 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 <button class="printBtn" id="receiptPrintBtn">POS 출력</button>
 <button class="nextBtn" id="nextPersonBtn">다음 인원</button>
 <div id="doneMsg" class="status hidden"></div>
-<div class="note" style="text-align:center">휴대폰 인쇄창에서 80mm POS 프린터를 선택해 주세요.</div>
+<div class="note" style="text-align:center">BIXOLON SRP-350III 직접 출력 · 브라우저 인쇄창 없음</div>
 </section>
 
 <a class="companyJump" href="https://mobilsearch.github.io/company/">동원훈련 중대검색 Ver#2</a>
@@ -665,92 +665,125 @@ function receiptDateTime(d){
   }catch(_){ return d.toLocaleString(); }
 }
 
-function buildBarcodeSvg(code){
-  if(!code) return '';
+// BIXOLON Android Web Print SDK(mPrintServer) direct POS bridge.
+// IMPORTANT: serverURL / printerName are intentionally left empty until the
+// actual Web Server Settings / Printer Settings values on the field phone are confirmed.
+// Never guess or hard-code a port here.
+const BIXOLON_POS_CONFIG={
+  serverURL:'',
+  printerName:'',
+  timeoutMs:7000
+};
+let bixolonIssueId=1;
+let posPrintBusy=false;
+
+function getBixolonPosConfig(){
+  return {
+    serverURL:String(BIXOLON_POS_CONFIG.serverURL||'').trim().replace(/\/+$/,''),
+    printerName:String(BIXOLON_POS_CONFIG.printerName||'').trim(),
+    timeoutMs:Number(BIXOLON_POS_CONFIG.timeoutMs)||7000
+  };
+}
+
+function bixolonFunc(functions,name,args){
+  const key='func'+(Object.keys(functions).length+1);
+  functions[key]={[name]:Array.isArray(args)?args:[]};
+}
+
+function buildBixolonReceiptPayload(p){
+  const functions={};
+  const isTest=operationMode==='테스트모드';
+  const title=isTest?'[테스트] 신분확인 확인증':'동원훈련 신분확인 확인증';
+  const affiliation=[p.company,p.platoon].filter(Boolean).join(' ');
+  const when=receiptDateTime(p.confirmedAt);
+  const line='------------------------------------------\n';
+
+  // The Web Print SDK manual states that when status is in error,
+  // commands queued after checkPrinterStatus are not processed.
+  bixolonFunc(functions,'checkPrinterStatus',[]);
+  // Korean KS5601 / CP949 printer code page.
+  bixolonFunc(functions,'setCharacterset',[949]);
+  bixolonFunc(functions,'printText',[title+'\n',0,1,true,false,false,0,1]);
+  bixolonFunc(functions,'printText',[line,0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['성명   : '+(p.name||'')+'\n',0,0,true,false,false,0,0]);
+  bixolonFunc(functions,'printText',['군번   : '+(p.military||'')+'\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['소속   : '+affiliation+'\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['직책   : '+(p.role||'')+'\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['총번   : '+(p.gun||'')+'\n',0,0,true,false,false,0,0]);
+  bixolonFunc(functions,'printText',['내무실 : '+(p.room||'')+'\n',0,0,true,false,false,0,0]);
+  bixolonFunc(functions,'printText',[line,0,0,false,false,false,0,0]);
+  if(p.barcode){
+    // CODE128=8, width=3, height=70, HRI below=2, center=1
+    bixolonFunc(functions,'print1DBarcode',[String(p.barcode),8,3,70,2,1]);
+    bixolonFunc(functions,'printText',['\n',0,0,false,false,false,0,0]);
+  }
+  bixolonFunc(functions,'printText',['신분확인 완료\n',0,0,true,false,false,0,1]);
+  bixolonFunc(functions,'printText',['확인시각 '+when+'\n',0,0,false,false,false,0,1]);
+  bixolonFunc(functions,'printText',[line,0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['준수사항\n',0,0,true,false,false,0,1]);
+  bixolonFunc(functions,'printText',['1. 중대장 통제 준수\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['2. 교육시간 준수\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['3. 교육시간 휴대폰 사용시 강제퇴소\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['4. 사진촬영 금지 등 군사보안 준수\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['5. 애로사항은 중대장에게 문의\n',0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',[line,0,0,false,false,false,0,0]);
+  bixolonFunc(functions,'printText',['119여단 2대대 · 2026. 9. 9.\n\n',0,0,true,false,false,0,1]);
+  // Feed then cut. No browser print UI is used.
+  bixolonFunc(functions,'cutPaper',[1]);
+
+  return {mode:0,id:bixolonIssueId++,functions};
+}
+
+async function sendBixolonPrint(printerName,payload,serverURL,timeoutMs){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
   try{
-    const ns='http://www.w3.org/2000/svg';
-    const svg=document.createElementNS(ns,'svg');
-    JsBarcode(svg,String(code),{
-      format:'CODE128',
-      displayValue:true,
-      fontSize:11,
-      height:40,
-      margin:1,
-      width:1.25
+    const url=serverURL+'/'+encodeURIComponent(printerName);
+    const r=await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json;charset=UTF-8'},
+      body:JSON.stringify(payload),
+      signal:controller.signal,
+      cache:'no-store'
     });
-    return svg.outerHTML;
-  }catch(_){
-    return '<div class="codeText">'+esc(code)+'</div>';
+    const body=await r.text().catch(()=> '');
+    if(!r.ok) throw new Error('HTTP '+r.status+(body?(' · '+body.slice(0,120)):''));
+    return body;
+  }finally{
+    clearTimeout(timer);
   }
 }
 
-function printReceipt(){
+async function printReceipt(){
   if(!lastConfirmed) return msg($('doneMsg'),'출력할 신분확인 정보가 없습니다.',true);
+  if(posPrintBusy) return;
 
-  const p=lastConfirmed;
-  const isTest=operationMode==='테스트모드';
-  const title=isTest?'테스트용 · 신분확인 확인증':'동원훈련 신분확인 확인증';
-  const barcodeSvg=buildBarcodeSvg(p.barcode);
-  const when=receiptDateTime(p.confirmedAt);
+  const cfg=getBixolonPosConfig();
+  if(!cfg.serverURL||!cfg.printerName){
+    return msg(
+      $('doneMsg'),
+      'POS 직접출력 설정 확인이 필요합니다. mPrintServer의 Web Server Settings와 Printer Settings 값을 확인해 주세요.',
+      true
+    );
+  }
 
-  const receipt=`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title>
-  <style>
-  @page{size:80mm auto;margin:2.2mm}
-  *{box-sizing:border-box}
-  html,body{margin:0;padding:0;background:#fff;color:#000}
-  body{font-family:"Malgun Gothic","Noto Sans KR",Arial,sans-serif}
-  .ticket{width:75.5mm;padding:2mm 1.5mm}
-  .test{border:3px double #000;padding:2mm;text-align:center;font-size:15pt;font-weight:950;margin-bottom:2mm}
-  .title{text-align:center;font-size:17pt;font-weight:950;border-top:2.5px solid #000;border-bottom:2.5px solid #000;padding:2.5mm 0}
-  .sub{text-align:center;font-size:10pt;font-weight:800;margin:1.5mm 0}
-  .tbl{border:1.5px solid #000;margin-top:2mm;font-size:11.5pt}
-  .line{display:grid;grid-template-columns:20mm 1fr;border-bottom:1px solid #777;min-height:7.5mm}
-  .line:last-child{border-bottom:0}
-  .k,.v{display:flex;align-items:center;padding:1.3mm 1.5mm}
-  .k{font-weight:900;justify-content:center;background:#f3f3f3;border-right:1px solid #777}
-  .v{font-weight:900}
-  .big{font-size:14pt}
-  .confirm{border:1.5px solid #000;border-top:0;padding:2mm;text-align:center;font-size:12pt;font-weight:950}
-  .bar{text-align:center;margin-top:2mm;border-top:1px solid #000;padding-top:1.5mm}
-  .bar svg{max-width:70mm;height:14mm}
-  .codeText{text-align:center;font-family:monospace;font-weight:900}
-  .unit{text-align:center;font-weight:900;font-size:10pt;margin-top:1.7mm}
-  .time{text-align:center;font-size:9.5pt;margin-top:1mm}
-  .noPrint{text-align:center;padding:8px;background:#eef3f7}
-  .noPrint button{font-size:15px;font-weight:900;padding:8px 20px}
-  @media print{.noPrint{display:none!important}}
-  </style></head><body>
-  <div class="noPrint"><button onclick="window.print()">POS 출력</button> · 80mm POS 프린터 선택</div>
-  <section class="ticket">
-    ${isTest?'<div class="test">테스트 출력 · 실제 입소용 아님</div>':''}
-    <div class="title">${esc(title)}</div>
-    <div class="sub">${esc(operationMode)}</div>
-    <div class="tbl">
-      <div class="line"><div class="k">성명</div><div class="v big">${esc(p.name)}</div></div>
-      <div class="line"><div class="k">군번</div><div class="v">${esc(p.military)}</div></div>
-      <div class="line"><div class="k">중대</div><div class="v">${esc(p.company)}</div></div>
-      <div class="line"><div class="k">소대</div><div class="v">${esc(p.platoon)}</div></div>
-      <div class="line"><div class="k">직책</div><div class="v">${esc(p.role)}</div></div>
-      <div class="line"><div class="k">총번</div><div class="v big">${esc(p.gun)}</div></div>
-      <div class="line"><div class="k">내무실</div><div class="v big">${esc(p.room)}</div></div>
-    </div>
-    <div class="confirm">신분확인 완료</div>
-    <div class="bar">${barcodeSvg}</div>
-    <div class="time">확인시각 ${esc(when)}</div>
-    <div class="unit">119여단 2대대 · 2026. 9. 9.</div>
-  </section></body></html>`;
-
-  const w=window.open('','_blank');
-  if(!w) return msg($('doneMsg'),'팝업이 차단되었습니다. 브라우저 팝업을 허용해 주세요.',true);
-  w.document.open();
-  w.document.write(receipt);
-  w.document.close();
-
-  // 사용자 버튼 탭에 의해 열린 창이므로 모바일 브라우저에서도 인쇄창 호출 가능성이 가장 높다.
-  setTimeout(()=>{
-    try{ w.focus(); w.print(); }
-    catch(_){ msg($('doneMsg'),'새 창의 [POS 출력] 버튼을 눌러 주세요.'); }
-  },300);
+  posPrintBusy=true;
+  $('receiptPrintBtn').disabled=true;
+  clearMsg($('doneMsg'));
+  msg($('doneMsg'),'POS 출력 중...');
+  try{
+    const payload=buildBixolonReceiptPayload(lastConfirmed);
+    await sendBixolonPrint(cfg.printerName,payload,cfg.serverURL,cfg.timeoutMs);
+    msg($('doneMsg'),'POS 출력 요청을 완료했습니다.');
+  }catch(e){
+    const text=e&&e.name==='AbortError'
+      ?'POS 출력 연결시간이 초과되었습니다. mPrintServer 서비스와 서버 설정을 확인해 주세요.'
+      :'POS 출력 실패: '+(e&&e.message?e.message:'mPrintServer 연결을 확인해 주세요.');
+    msg($('doneMsg'),text,true);
+  }finally{
+    posPrintBusy=false;
+    $('receiptPrintBtn').disabled=false;
+  }
 }
 
 function resetToScan(){
