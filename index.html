@@ -666,12 +666,12 @@ function receiptDateTime(d){
 }
 
 // BIXOLON Android Web Print SDK(mPrintServer) direct POS bridge.
-// IMPORTANT: serverURL / printerName are intentionally left empty until the
-// actual Web Server Settings / Printer Settings values on the field phone are confirmed.
-// Never guess or hard-code a port here.
+// Field-confirmed 2026-08-20: Web Server port 18080, printer alias 350,
+// SRP-350III over USB (/dev/bus/usb/002/002). The browser talks only to
+// the phone-local mPrintServer; USB device selection remains managed by WebPrintSDK.
 const BIXOLON_POS_CONFIG={
-  serverURL:'',
-  printerName:'',
+  serverURL:'http://127.0.0.1:18080',
+  printerName:'350',
   timeoutMs:7000
 };
 let bixolonIssueId=1;
