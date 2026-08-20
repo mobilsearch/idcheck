@@ -5,11 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>신분확인</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
 :root{--ink:#17202a;--blue:#1e5f93;--green:#1f7a4d;--red:#b42318;--bg:#eef2f5;--line:#c7d0d9}
 *{box-sizing:border-box}
 body{margin:0;font-family:Arial,"Noto Sans KR","Malgun Gothic",sans-serif;background:var(--bg);color:var(--ink)}
 header{background:#183d5b;color:#fff;padding:14px 16px;text-align:center;font-weight:900;font-size:21px}
+.modeTop{display:inline-block;margin-top:7px;padding:4px 11px;border-radius:999px;font-size:12px;background:#fff;color:#183d5b}
+.modeTop.test{background:#fff3cd;color:#7a5200}
+.modeTop.live{background:#ffe3e3;color:#a61b1b;border:1px solid #e69a9a}
 .wrap{max-width:520px;margin:0 auto;padding:13px}
 .card{background:#fff;border:1px solid #c9d2da;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .hidden{display:none!important}
@@ -39,19 +43,28 @@ video{width:100%;height:100%;object-fit:cover}
 .badge{display:inline-block;padding:3px 7px;border-radius:99px;background:#eaf3f8;font-size:12px;font-weight:900}
 #otherTypeBox{margin-top:6px}
 footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
+.companyJump{display:block;text-decoration:none;text-align:center;margin:14px 0 12px;padding:14px 12px;border-radius:12px;background:#183d5b;color:#fff;font-size:16px;font-weight:900;box-shadow:0 2px 8px rgba(0,0,0,.10)}
+.companyJump:active{transform:translateY(1px)}
+.loginCode{letter-spacing:.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.doneIcon{font-size:52px;text-align:center;line-height:1;margin:4px 0 10px}
+.doneTitle{text-align:center;font-size:22px;font-weight:950;margin-bottom:8px;color:#17623a}
+.doneInfo{text-align:center;font-weight:800;line-height:1.55;margin-bottom:12px}
+.printBtn{background:#111827;color:#fff;margin-top:10px}
+.nextBtn{background:#1e5f93;color:#fff;margin-top:8px}
+.testNotice{background:#fff3cd;color:#7a5200;border:1px solid #e4c65e;border-radius:9px;padding:8px;text-align:center;font-weight:900;margin-bottom:10px}
 </style>
 </head>
 <body>
-<header>동원훈련 신분확인</header>
+<header>동원훈련 신분확인<br><span id="modeTop" class="modeTop">운용모드 확인 중...</span></header>
 <div class="wrap">
 
 <section id="login" class="card">
 <h2>신분확인 담당자 인증</h2>
 <label>소속</label><input id="opOrg" value="119여단 2대대" placeholder="소속 입력">
-<label>직책</label><input id="opRole" placeholder="예: 인사담당">
 <label>성명</label><input id="opName" placeholder="담당자 성명">
+<label>고유번호</label><input id="opAccessCode" class="loginCode" type="password" autocomplete="off" placeholder="고유번호 입력">
 <button class="primary" id="loginBtn">사용 시작</button>
-<div class="note"><b>확인자명부</b>에 등록된 사용자만 접속가능합니다.<br>인증은 2시간 유지되며, 2시간 이내에는 브라우저나 단말을 껐다 켜도 자동 복귀합니다.</div>
+<div class="note"><b>확인자명부</b>에 등록된 사용자만 접속가능합니다.<br>고유번호 인증은 3시간 유지되며, 3시간 이내에는 브라우저나 단말을 껐다 켜도 자동 복귀합니다.<br>직책은 확인자명부에서 자동 적용됩니다.</div>
 <div id="loginMsg" class="status hidden"></div>
 </section>
 
@@ -116,6 +129,18 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 <div id="resultMsg" class="status hidden"></div>
 </section>
 
+<section id="done" class="card hidden">
+<div id="doneTestNotice" class="testNotice hidden">테스트모드 출력입니다.</div>
+<div class="doneIcon">✓</div>
+<div class="doneTitle">신분확인 완료</div>
+<div id="doneInfo" class="doneInfo"></div>
+<button class="printBtn" id="receiptPrintBtn">POS 출력</button>
+<button class="nextBtn" id="nextPersonBtn">다음 인원</button>
+<div id="doneMsg" class="status hidden"></div>
+<div class="note" style="text-align:center">휴대폰 인쇄창에서 80mm POS 프린터를 선택해 주세요.</div>
+</section>
+
+<a class="companyJump" href="https://mobilsearch.github.io/company/">동원훈련 중대검색 Ver#2</a>
 <footer>119여단 2대대 · 신분확인 전용</footer>
 </div>
 
@@ -123,14 +148,33 @@ footer{text-align:center;font-size:11px;color:#667580;padding:8px 0 18px}
 
 <script>
 const API = "https://script.google.com/macros/s/AKfycbzXm3I6ZbSifB7H9U9krGplLTsChmepjgZ-wAY7L1qI02TjnwS1viMjsARtWtNamd_8TQ/exec";
-let token='', rosterNames=[], rosterPeople=[], stream=null, detector=null, ocrWorker=null;
+let token='', rosterNames=[], rosterPeople=[], stream=null, detector=null, ocrWorker=null, operationMode='';
 let ocrReady=false, ocrBusy=false, scanBusy=false, currentPerson=null, currentMethod='';
 let pendingDetectedType='', lastDetectAt=0, lastBarcodeAttemptAt=0, ocrTimer=null, scanActive=false;
+let lastConfirmed=null;
 
 const $=id=>document.getElementById(id);
-function show(id){ ['login','scan','search','result'].forEach(x=>$(x).classList.toggle('hidden',x!==id)); }
+function show(id){ ['login','scan','search','result','done'].forEach(x=>$(x).classList.toggle('hidden',x!==id)); }
 function msg(el,txt,bad=false){ el.textContent=txt; el.classList.remove('hidden'); el.style.color=bad?'#b42318':'#173b59'; }
 function clearMsg(el){ el.classList.add('hidden'); el.textContent=''; }
+function setModeBadge(mode){
+  operationMode=mode||'';
+  const b=$('modeTop');
+  if(!b) return;
+  if(!operationMode){
+    b.textContent='운용모드 확인 실패';
+    b.className='modeTop live';
+    return;
+  }
+  b.textContent='['+operationMode+']';
+  b.className='modeTop '+(operationMode==='실제모드'?'live':'test');
+}
+async function loadModeInfo(){
+  try{
+    const r=await jsonp('modeInfo');
+    setModeBadge(r&&r.ok?r.mode:'');
+  }catch(_){setModeBadge('')}
+}
 
 function jsonp(action, params={}){
   return new Promise((resolve,reject)=>{
@@ -167,6 +211,7 @@ async function restoreSession(){
     token=savedToken;
     rosterNames=n.names||[];
     rosterPeople=n.people||[];
+    setModeBadge(n.mode||'');
     show('scan');
     await startCamera();
     initOcr();
@@ -177,17 +222,24 @@ async function restoreSession(){
 }
 
 async function login(){
-  const org=$('opOrg').value.trim(), role=$('opRole').value.trim(), name=$('opName').value.trim();
-  if(!org||!role||!name) return msg($('loginMsg'),'소속·직책·성명을 모두 입력해 주세요.',true);
+  const org=$('opOrg').value.trim(), name=$('opName').value.trim(), accessCode=$('opAccessCode').value.trim();
+  if(!org||!name||!accessCode) return msg($('loginMsg'),'소속·성명·고유번호를 모두 입력해 주세요.',true);
   msg($('loginMsg'),'확인 중...');
   try{
-    const r=await jsonp('operatorLogin',{org,role,name});
+    const r=await jsonp('operatorLogin',{org,name,accessCode});
     if(!r.ok) return msg($('loginMsg'),r.error||'사용할 수 없습니다.',true);
-    token=r.token; const expiresAt=Date.now()+2*60*60*1000; localStorage.setItem('idcheckToken',token); localStorage.setItem('idcheckExpiresAt',String(expiresAt));
+    token=r.token;
+    setModeBadge(r.mode||'');
+    const sessionMs=((Number(r.sessionSeconds)||10800)*1000);
+    const expiresAt=Date.now()+sessionMs;
+    localStorage.setItem('idcheckToken',token);
+    localStorage.setItem('idcheckExpiresAt',String(expiresAt));
     clearMsg($('loginMsg'));
+    $('opAccessCode').value='';
     const n=await jsonp('rosterNames',{token});
     rosterNames=n.ok?n.names:[];
     rosterPeople=n.ok?(n.people||[]):[];
+    if(n.ok) setModeBadge(n.mode||operationMode);
     show('scan'); await startCamera(); initOcr();
   }catch(e){ msg($('loginMsg'),e.message,true); }
 }
@@ -581,20 +633,128 @@ async function confirmIdentity(){
   };
   try{
     await fetch(API,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)});
-    msg($('resultMsg'),'신분확인 완료 · 다음 인원을 준비합니다.');
-    setTimeout(resetToScan,550);
+    lastConfirmed={
+      ...currentPerson,
+      idType,
+      idTypeOther,
+      searchMethod:currentMethod,
+      confirmedAt:new Date()
+    };
+    pauseCamera();
+    $('doneInfo').innerHTML='<b>'+esc(lastConfirmed.name)+'</b><br>'+esc(lastConfirmed.company)+' · '+esc(lastConfirmed.platoon)+'<br>신분확인 기록 완료';
+    $('doneTestNotice').classList.toggle('hidden',operationMode!=='테스트모드');
+    clearMsg($('doneMsg'));
+    show('done');
   }catch(e){msg($('resultMsg'),'기록 전송 실패: '+e.message,true);}
 }
 
+
+function receiptDateTime(d){
+  try{
+    return new Intl.DateTimeFormat('ko-KR',{
+      timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',
+      hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false
+    }).format(d);
+  }catch(_){ return d.toLocaleString(); }
+}
+
+function buildBarcodeSvg(code){
+  if(!code) return '';
+  try{
+    const ns='http://www.w3.org/2000/svg';
+    const svg=document.createElementNS(ns,'svg');
+    JsBarcode(svg,String(code),{
+      format:'CODE128',
+      displayValue:true,
+      fontSize:11,
+      height:40,
+      margin:1,
+      width:1.25
+    });
+    return svg.outerHTML;
+  }catch(_){
+    return '<div class="codeText">'+esc(code)+'</div>';
+  }
+}
+
+function printReceipt(){
+  if(!lastConfirmed) return msg($('doneMsg'),'출력할 신분확인 정보가 없습니다.',true);
+
+  const p=lastConfirmed;
+  const isTest=operationMode==='테스트모드';
+  const title=isTest?'테스트용 · 신분확인 확인증':'동원훈련 신분확인 확인증';
+  const barcodeSvg=buildBarcodeSvg(p.barcode);
+  const when=receiptDateTime(p.confirmedAt);
+
+  const receipt=`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title>
+  <style>
+  @page{size:80mm auto;margin:2.2mm}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#fff;color:#000}
+  body{font-family:"Malgun Gothic","Noto Sans KR",Arial,sans-serif}
+  .ticket{width:75.5mm;padding:2mm 1.5mm}
+  .test{border:3px double #000;padding:2mm;text-align:center;font-size:15pt;font-weight:950;margin-bottom:2mm}
+  .title{text-align:center;font-size:17pt;font-weight:950;border-top:2.5px solid #000;border-bottom:2.5px solid #000;padding:2.5mm 0}
+  .sub{text-align:center;font-size:10pt;font-weight:800;margin:1.5mm 0}
+  .tbl{border:1.5px solid #000;margin-top:2mm;font-size:11.5pt}
+  .line{display:grid;grid-template-columns:20mm 1fr;border-bottom:1px solid #777;min-height:7.5mm}
+  .line:last-child{border-bottom:0}
+  .k,.v{display:flex;align-items:center;padding:1.3mm 1.5mm}
+  .k{font-weight:900;justify-content:center;background:#f3f3f3;border-right:1px solid #777}
+  .v{font-weight:900}
+  .big{font-size:14pt}
+  .confirm{border:1.5px solid #000;border-top:0;padding:2mm;text-align:center;font-size:12pt;font-weight:950}
+  .bar{text-align:center;margin-top:2mm;border-top:1px solid #000;padding-top:1.5mm}
+  .bar svg{max-width:70mm;height:14mm}
+  .codeText{text-align:center;font-family:monospace;font-weight:900}
+  .unit{text-align:center;font-weight:900;font-size:10pt;margin-top:1.7mm}
+  .time{text-align:center;font-size:9.5pt;margin-top:1mm}
+  .noPrint{text-align:center;padding:8px;background:#eef3f7}
+  .noPrint button{font-size:15px;font-weight:900;padding:8px 20px}
+  @media print{.noPrint{display:none!important}}
+  </style></head><body>
+  <div class="noPrint"><button onclick="window.print()">POS 출력</button> · 80mm POS 프린터 선택</div>
+  <section class="ticket">
+    ${isTest?'<div class="test">테스트 출력 · 실제 입소용 아님</div>':''}
+    <div class="title">${esc(title)}</div>
+    <div class="sub">${esc(operationMode)}</div>
+    <div class="tbl">
+      <div class="line"><div class="k">성명</div><div class="v big">${esc(p.name)}</div></div>
+      <div class="line"><div class="k">군번</div><div class="v">${esc(p.military)}</div></div>
+      <div class="line"><div class="k">중대</div><div class="v">${esc(p.company)}</div></div>
+      <div class="line"><div class="k">소대</div><div class="v">${esc(p.platoon)}</div></div>
+      <div class="line"><div class="k">직책</div><div class="v">${esc(p.role)}</div></div>
+      <div class="line"><div class="k">총번</div><div class="v big">${esc(p.gun)}</div></div>
+      <div class="line"><div class="k">내무실</div><div class="v big">${esc(p.room)}</div></div>
+    </div>
+    <div class="confirm">신분확인 완료</div>
+    <div class="bar">${barcodeSvg}</div>
+    <div class="time">확인시각 ${esc(when)}</div>
+    <div class="unit">119여단 2대대 · 2026. 9. 9.</div>
+  </section></body></html>`;
+
+  const w=window.open('','_blank');
+  if(!w) return msg($('doneMsg'),'팝업이 차단되었습니다. 브라우저 팝업을 허용해 주세요.',true);
+  w.document.open();
+  w.document.write(receipt);
+  w.document.close();
+
+  // 사용자 버튼 탭에 의해 열린 창이므로 모바일 브라우저에서도 인쇄창 호출 가능성이 가장 높다.
+  setTimeout(()=>{
+    try{ w.focus(); w.print(); }
+    catch(_){ msg($('doneMsg'),'새 창의 [POS 출력] 버튼을 눌러 주세요.'); }
+  },300);
+}
+
 function resetToScan(){
-  currentPerson=null; currentMethod=''; pendingDetectedType=''; scanBusy=false;
+  currentPerson=null; currentMethod=''; pendingDetectedType=''; scanBusy=false; lastConfirmed=null;
   $('idType').value=''; $('idTypeOther').value=''; $('otherTypeBox').classList.add('hidden');
   show('scan'); startCamera(); initOcr();
 }
 
 function esc(v){ return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
-window.addEventListener('DOMContentLoaded',()=>{ restoreSession(); });
+window.addEventListener('DOMContentLoaded',()=>{ loadModeInfo(); restoreSession(); });
 $('loginBtn').onclick=login;
 $('nameSearchBtn').onclick=()=>openNameSearch(false);
 $('backScanBtn').onclick=()=>{pendingDetectedType='';show('scan');startCamera();initOcr();};
@@ -603,6 +763,8 @@ $('searchName').addEventListener('keydown',e=>{if(e.key==='Enter')searchName();}
 $('searchIdType').onchange=()=>$('searchOtherBox').classList.toggle('hidden',$('searchIdType').value!=='기타');
 $('idType').onchange=()=>$('otherTypeBox').classList.toggle('hidden',$('idType').value!=='기타');
 $('confirmBtn').onclick=confirmIdentity;
+$('receiptPrintBtn').onclick=printReceipt;
+$('nextPersonBtn').onclick=resetToScan;
 $('cancelBtn').onclick=resetToScan;
 
 window.addEventListener('beforeunload',()=>{stopCamera();if(ocrWorker)try{ocrWorker.terminate();}catch(_){}});
