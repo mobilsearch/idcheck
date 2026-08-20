@@ -670,7 +670,9 @@ function receiptDateTime(d){
 // SRP-350III over USB (/dev/bus/usb/002/002). The browser talks only to
 // the phone-local mPrintServer; USB device selection remains managed by WebPrintSDK.
 const BIXOLON_POS_CONFIG={
-  serverURL:'http://127.0.0.1:18080',
+  // Android Chrome 94+ requires HTTPS for BIXOLON Web Print SDK.
+  // Official Web Print SDK base path is case-sensitive and includes /WebPrintSDK/.
+  serverURL:'https://127.0.0.1:18080/WebPrintSDK',
   printerName:'350',
   timeoutMs:7000
 };
@@ -731,7 +733,7 @@ function buildBixolonReceiptPayload(p){
   // Feed then cut. No browser print UI is used.
   bixolonFunc(functions,'cutPaper',[1]);
 
-  return {mode:0,id:bixolonIssueId++,functions};
+  return {id:bixolonIssueId++,functions};
 }
 
 async function sendBixolonPrint(printerName,payload,serverURL,timeoutMs){
@@ -777,8 +779,8 @@ async function printReceipt(){
     msg($('doneMsg'),'POS 출력 요청을 완료했습니다.');
   }catch(e){
     const text=e&&e.name==='AbortError'
-      ?'POS 출력 연결시간이 초과되었습니다. mPrintServer 서비스와 서버 설정을 확인해 주세요.'
-      :'POS 출력 실패: '+(e&&e.message?e.message:'mPrintServer 연결을 확인해 주세요.');
+      ?'POS 출력 연결시간이 초과되었습니다. WebPrintSDK의 인증서 사용·백그라운드 서비스·포트 18080을 확인해 주세요.'
+      :'POS 출력 실패: '+(e&&e.message?e.message:'WebPrintSDK 연결을 확인해 주세요. 인증서 사용이 켜져 있어야 합니다.');
     msg($('doneMsg'),text,true);
   }finally{
     posPrintBusy=false;
