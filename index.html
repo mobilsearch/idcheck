@@ -186,7 +186,7 @@ function jsonp(action, params={}){
     s.onerror=()=>{cleanup();reject(new Error('서버 연결 실패'));};
     s.src=API+'?'+q.toString();
     document.body.appendChild(s);
-    setTimeout(()=>{ if(window[cb]){cleanup();reject(new Error('서버 응답 지연'));} },12000);
+    setTimeout(()=>{ if(window[cb]){cleanup();reject(new Error('서버 응답 지연'));} },15000);
   });
 }
 
@@ -236,10 +236,8 @@ async function login(){
     localStorage.setItem('idcheckExpiresAt',String(expiresAt));
     clearMsg($('loginMsg'));
     $('opAccessCode').value='';
-    const n=await jsonp('rosterNames',{token});
-    rosterNames=n.ok?n.names:[];
-    rosterPeople=n.ok?(n.people||[]):[];
-    if(n.ok) setModeBadge(n.mode||operationMode);
+    rosterNames=r.names||[];
+    rosterPeople=r.people||[];
     show('scan'); await startCamera(); initOcr();
   }catch(e){ msg($('loginMsg'),e.message,true); }
 }
@@ -626,26 +624,35 @@ async function confirmIdentity(){
   const idType=$('idType').value, idTypeOther=$('idTypeOther').value.trim();
   if(!idType) return msg($('resultMsg'),'신분증 수단을 선택해 주세요.',true);
   if(idType==='기타'&&!idTypeOther) return msg($('resultMsg'),'기타 신분증 수단을 직접 입력해 주세요.',true);
-  msg($('resultMsg'),'기록 중...');
+
   const body={
     action:'idcheckLog',token,barcodeId:currentPerson.barcode,
     idType,idTypeOther,searchMethod:currentMethod
   };
-  try{
-    await fetch(API,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)});
-    lastConfirmed={
-      ...currentPerson,
-      idType,
-      idTypeOther,
-      searchMethod:currentMethod,
-      confirmedAt:new Date()
-    };
-    pauseCamera();
-    $('doneInfo').innerHTML='<b>'+esc(lastConfirmed.name)+'</b><br>'+esc(lastConfirmed.company)+' · '+esc(lastConfirmed.platoon)+'<br>신분확인 기록 완료';
-    $('doneTestNotice').classList.toggle('hidden',operationMode!=='테스트모드');
-    clearMsg($('doneMsg'));
-    show('done');
-  }catch(e){msg($('resultMsg'),'기록 전송 실패: '+e.message,true);}
+
+  // 현장 처리속도 우선: 기록 요청을 보낸 직후 다음 화면으로 즉시 전환한다.
+  lastConfirmed={
+    ...currentPerson,
+    idType,
+    idTypeOther,
+    searchMethod:currentMethod,
+    confirmedAt:new Date()
+  };
+  pauseCamera();
+  $('doneInfo').innerHTML='<b>'+esc(lastConfirmed.name)+'</b><br>'+esc(lastConfirmed.company)+' · '+esc(lastConfirmed.platoon)+'<br>신분확인 완료';
+  $('doneTestNotice').classList.toggle('hidden',operationMode!=='테스트모드');
+  clearMsg($('doneMsg'));
+  show('done');
+
+  fetch(API,{
+    method:'POST',
+    mode:'no-cors',
+    keepalive:true,
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body:JSON.stringify(body)
+  }).catch(()=>{
+    msg($('doneMsg'),'기록 전송에 실패했습니다. 네트워크를 확인해 주세요.',true);
+  });
 }
 
 
